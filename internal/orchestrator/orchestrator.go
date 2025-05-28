@@ -39,18 +39,18 @@ func New(
 	}
 
 	for _, service := range s {
-		if cfg := service.RetryConfig; cfg != nil {
+		if service.RetryConfig != nil {
 			handler := service.Handler
 			service.Handler = func(ctx context.Context, request *event.Event) (any, error) {
 				result, err := handler(ctx, request)
-				for attempt := range cfg.MaxRetries {
+				for attempt := range service.RetryConfig.MaxRetries {
 					if err != nil {
 						baseDelay := math.Min(
-							float64(cfg.InitialDelay)*math.Pow(2, float64(attempt)),
-							float64(cfg.MaxRetryDelay),
+							float64(service.RetryConfig.InitialDelay)*math.Pow(2, float64(attempt)),
+							float64(service.RetryConfig.MaxRetryDelay),
 						)
 						delayWithJitter := time.Duration(
-							baseDelay * (1 + (rand.Float64()*2-1)*cfg.JitterFactor),
+							baseDelay * (1 + (rand.Float64()*2-1)*service.RetryConfig.JitterFactor),
 						)
 						time.Sleep(delayWithJitter)
 						result, err = handler(ctx, request)
@@ -61,7 +61,11 @@ func New(
 
 				return nil, errors.Join(
 					err,
-					fmt.Errorf("service %s failed after %d attempts", service.Name, cfg.MaxRetries),
+					fmt.Errorf(
+						"service %s failed after %d attempts",
+						service.Name,
+						service.RetryConfig.MaxRetries,
+					),
 				)
 			}
 		}
@@ -96,44 +100,39 @@ func (o *Orchestrator) Orchestrate(
 		Responses: map[string]any{},
 	}
 
-	// Track completed services and their errors
-	serviceChannels := make(map[string]chan struct{})
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	wg.Add(o.serviceCount)
-
 	// Initialize channels for each service
+	serviceChannels := make(map[string]chan struct{})
 	for name := range o.serviceMap {
 		serviceChannels[name] = make(chan struct{})
 	}
 
-	// Function to execute a service
-	executeService := func(service services.Config) {
-		defer wg.Done()
-		name := service.Name
-
-		// Wait for dependencies using channels
-		for _, dep := range o.serviceMap[name].Dependencies {
-			<-serviceChannels[dep]
-		}
-
-		// Execute service
-		result, err := service.Handler(ctx, event)
-
-		mu.Lock()
-		event.Responses[name] = result
-		if err != nil {
-			event.Warnings = append(event.Warnings, err.Error())
-		}
-		mu.Unlock()
-
-		// Signal completion to dependent services
-		close(serviceChannels[name])
-	}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(o.serviceCount)
 
 	// Start all services
 	for _, service := range o.serviceMap {
-		go executeService(service)
+		go func(service services.Config) {
+			defer wg.Done()
+
+			// Wait for dependencies using channels
+			for _, dep := range o.serviceMap[service.Name].Dependencies {
+				<-serviceChannels[dep]
+			}
+
+			// Execute service
+			result, err := service.Handler(ctx, event)
+
+			mu.Lock()
+			event.Responses[service.Name] = result
+			if err != nil {
+				event.Warnings = append(event.Warnings, err.Error())
+			}
+			mu.Unlock()
+
+			// Signal completion to dependent services
+			close(serviceChannels[service.Name])
+		}(service)
 	}
 
 	// Wait for all services to complete

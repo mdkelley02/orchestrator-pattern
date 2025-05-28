@@ -39,31 +39,31 @@ func Request() *orchestrator.Request {
 	}
 }
 
-var PaymentService = services.Config{
-	Name:        "payments",
-	RetryConfig: services.DefaultRetryConfig,
-	Handler: func(ctx context.Context, request *event.Event) (any, error) {
-		return "PAYMENTS", nil
-	},
-}
+func TestLightGraphOrchestration(t *testing.T) {
+	var PaymentService = services.Config{
+		Name:        "payments",
+		RetryConfig: services.DefaultRetryConfig,
+		Handler: func(ctx context.Context, request *event.Event) (any, error) {
+			return "PAYMENTS", nil
+		},
+	}
 
-var AnalyticsService = services.Config{
-	Name:         "analytics",
-	Dependencies: []string{PaymentService.Name},
-	Handler: func(ctx context.Context, request *event.Event) (any, error) {
-		return "ANALYTICS", nil
-	},
-}
+	var AnalyticsService = services.Config{
+		Name:         "analytics",
+		Dependencies: []string{PaymentService.Name},
+		Handler: func(ctx context.Context, request *event.Event) (any, error) {
+			return "ANALYTICS", nil
+		},
+	}
 
-var ReportingService = services.Config{
-	Name:         "reporting",
-	Dependencies: []string{AnalyticsService.Name},
-	Handler: func(ctx context.Context, request *event.Event) (any, error) {
-		return "REPORTING", nil
-	},
-}
+	var ReportingService = services.Config{
+		Name:         "reporting",
+		Dependencies: []string{AnalyticsService.Name},
+		Handler: func(ctx context.Context, request *event.Event) (any, error) {
+			return "REPORTING", nil
+		},
+	}
 
-func TestSingleOrchestration(t *testing.T) {
 	o := orchestrator.New(
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 			Level: slog.LevelDebug,
@@ -80,8 +80,43 @@ func TestSingleOrchestration(t *testing.T) {
 		response, err := o.Orchestrate(ctx, Request())
 		require.NoError(t, err)
 		require.NotNil(t, response)
-		require.Equal(t, response.Event.Responses["payments"], "PAYMENTS")
-		require.Equal(t, response.Event.Responses["analytics"], "ANALYTICS")
-		require.Equal(t, response.Event.Responses["reporting"], "REPORTING")
+		require.Equal(t, response.Event.Responses[PaymentService.Name], "PAYMENTS")
+		require.Equal(t, response.Event.Responses[AnalyticsService.Name], "ANALYTICS")
+		require.Equal(t, response.Event.Responses[ReportingService.Name], "REPORTING")
+	}
+}
+
+func TestFlatOrchestration(t *testing.T) {
+	var PaymentService = services.Config{
+		Name: "payments",
+		Handler: func(ctx context.Context, request *event.Event) (any, error) {
+			return "PAYMENTS", nil
+		},
+	}
+
+	var AnalyticsService = services.Config{
+		Name: "analytics",
+		Handler: func(ctx context.Context, request *event.Event) (any, error) {
+			return "ANALYTICS", nil
+		},
+	}
+
+	o := orchestrator.New(
+		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+		journaler.New(),
+		PaymentService,
+		AnalyticsService,
+	)
+
+	ctx := context.Background()
+
+	for range 1000 {
+		response, err := o.Orchestrate(ctx, Request())
+		require.NoError(t, err)
+		require.NotNil(t, response)
+		require.Equal(t, response.Event.Responses[PaymentService.Name], "PAYMENTS")
+		require.Equal(t, response.Event.Responses[AnalyticsService.Name], "ANALYTICS")
 	}
 }
