@@ -1,19 +1,15 @@
 # Orchestrator Pattern
 
-A Go implementation of the Orchestrator pattern for managing complex service workflows with dependency management, retry mechanisms, and event journaling.
-
-## Overview
-
-This project provides a robust framework for orchestrating multiple services in a distributed system. It handles service dependencies, implements retry mechanisms with exponential backoff and jitter, and provides event journaling capabilities.
+A robust and flexible Go library for orchestrating complex service workflows with dependency management, retry mechanisms, and event journaling.
 
 ## Features
 
-- **Service Orchestration**: Manage multiple services with defined dependencies
-- **Retry Mechanism**: Configurable retry policies with exponential backoff and jitter
-- **Event Journaling**: Track and log service execution events
-- **Concurrent Execution**: Services run concurrently while respecting dependencies
-- **Error Handling**: Comprehensive error handling and propagation
-- **Structured Logging**: Built-in support for structured logging using `slog`
+- **Dependency Management**: Define service dependencies and execute them in the correct order
+- **Concurrent Execution**: Services run concurrently when possible, improving performance
+- **Retry Mechanism**: Built-in support for configurable retry policies with exponential backoff and jitter
+- **Event Journaling**: Optional event logging for audit trails and debugging
+- **Error Handling**: Graceful error handling with service-level error isolation
+- **Context Support**: Full context.Context integration for cancellation and timeouts
 
 ## Installation
 
@@ -21,9 +17,7 @@ This project provides a robust framework for orchestrating multiple services in 
 go get github.com/mdkelley02/orchestrator-pattern
 ```
 
-## Usage
-
-Here's a basic example of how to use the orchestrator:
+## Quick Start
 
 ```go
 package main
@@ -33,99 +27,105 @@ import (
     "log/slog"
     "os"
 
-    "github.com/mdkelley02/orchestrator-pattern/internal/event"
-    "github.com/mdkelley02/orchestrator-pattern/internal/journaler"
-    "github.com/mdkelley02/orchestrator-pattern/internal/orchestrator"
-    "github.com/mdkelley02/orchestrator-pattern/internal/services"
+    "github.com/mdkelley02/orchestrator-pattern/orchestrator"
 )
 
 func main() {
-    // Create services
-    paymentService := services.Config{
-        Name:        "payments",
-        RetryConfig: services.DefaultRetryConfig,
-        Handler: func(ctx context.Context, request *event.Event) (any, error) {
-            // Implement payment service logic
-            return "PAYMENT_SUCCESS", nil
+    // Create a logger
+    logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+    // Define services
+    authService := orchestrator.Service{
+        Name: "authorization",
+        Handler: func(ctx context.Context, event *orchestrator.Event) (any, error) {
+            // Implement authorization logic
+            return "AUTHORIZED", nil
         },
     }
 
-    analyticsService := services.Config{
-        Name:         "analytics",
-        Dependencies: []string{paymentService.Name},
-        Handler: func(ctx context.Context, request *event.Event) (any, error) {
-            // Implement analytics service logic
-            return "ANALYTICS_COMPLETE", nil
+    paymentService := orchestrator.Service{
+        Name:         "payment",
+        Dependencies: []string{authService.Name},
+        RetryConfig:  orchestrator.DefaultRetryConfig,
+        Handler: func(ctx context.Context, event *orchestrator.Event) (any, error) {
+            // Implement payment logic
+            return "PAID", nil
         },
     }
 
     // Create orchestrator
-    o := orchestrator.New(
-        slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-            Level: slog.LevelDebug,
-        })),
-        journaler.New(),
-        paymentService,
-        analyticsService,
-    )
+    o := orchestrator.New(logger, nil, authService, paymentService)
 
     // Create request
     request := &orchestrator.Request{
-        EventId:        "123",
-        TenantId:       "tenant-1",
-        OrganizationId: "org-1",
-        Payload: map[string]any{
-            "amount": 100.00,
-            "currency": "USD",
-        },
+        RequestId: "123",
+        Payload:   map[string]any{"amount": 100},
     }
 
-    // Execute orchestration
-    response, err := o.Orchestrate(context.Background(), request)
+    // Execute workflow
+    event, err := o.Orchestrate(context.Background(), request)
     if err != nil {
-        // Handle error
+        logger.Error("orchestration failed", "error", err)
+        return
     }
+
+    // Process results
+    logger.Info("orchestration completed", "responses", event.Responses)
 }
 ```
 
-## Service Configuration
+## Key Concepts
+
+### Service
+
+A service represents a single unit of work in your workflow. Each service has:
+
+- A unique name
+- Optional dependencies on other services
+- A handler function that implements the service logic
+- Optional retry configuration
 
 ### Retry Configuration
 
-The orchestrator supports configurable retry policies:
+The library provides a flexible retry mechanism with:
+
+- Configurable maximum retry attempts
+- Exponential backoff
+- Jitter to prevent thundering herd problems
+- Custom retry conditions
 
 ```go
-retryConfig := &services.RetryConfig{
+retryConfig := &orchestrator.RetryConfig{
     MaxRetries:    5,
     InitialDelay:  100 * time.Millisecond,
     MaxRetryDelay: 3 * time.Second,
     JitterFactor:  0.2,
-}
-```
-
-### Service Dependencies
-
-Services can declare dependencies on other services:
-
-```go
-service := services.Config{
-    Name:         "service-name",
-    Dependencies: []string{"dependency-1", "dependency-2"},
-    Handler: func(ctx context.Context, request *event.Event) (any, error) {
-        // Service implementation
-        return result, nil
+    ShouldRetry: func(err error) bool {
+        return err != nil
     },
 }
 ```
 
-## Event Journaling
+### Event Journaling
 
-The orchestrator automatically journals events, including:
+Implement the `Journaler` interface to log events for auditing or debugging:
 
-- Service execution results
-- Warnings and errors
-- Execution timestamps
-- Request and response data
+```go
+type MyJournaler struct{}
+
+func (j *MyJournaler) Journal(ctx context.Context, event *orchestrator.Event) error {
+    // Implement your journaling logic
+    return nil
+}
+```
+
+## Best Practices
+
+1. **Service Isolation**: Keep services focused on a single responsibility
+2. **Error Handling**: Use the retry mechanism for transient failures
+3. **Dependency Management**: Keep the dependency graph as simple as possible
+4. **Context Usage**: Always respect context cancellation in service handlers
+5. **Logging**: Use the provided logger for consistent logging across services
 
 ## Contributing
 
