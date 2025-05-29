@@ -77,23 +77,17 @@ func New(
 }
 
 type Request struct {
-	TenantId       string `json:"tenantId"`
-	OrganizationId string `json:"organizationId"`
-	EventId        string `json:"eventId"`
-	Payload        any    `json:"payload"`
-}
-
-type Response struct {
-	Event *event.Event `json:"event"`
+	RequestId string
+	Payload   any
 }
 
 func (o *Orchestrator) Orchestrate(
 	ctx context.Context,
 	request *Request,
-) (_ *Response, err error) {
+) (_ *event.Event, err error) {
 	// Create the event
 	event := &event.Event{
-		EventId:   request.EventId,
+		EventId:   request.RequestId,
 		CreatedAt: time.Now().Format(time.RFC3339),
 		Request:   request,
 		Warnings:  []string{},
@@ -116,16 +110,16 @@ func (o *Orchestrator) Orchestrate(
 			defer wg.Done()
 
 			// Wait for dependencies using channels
-			for _, dep := range o.serviceMap[service.Name].Dependencies {
-				<-serviceChannels[dep]
+			for _, dependency := range o.serviceMap[service.Name].Dependencies {
+				<-serviceChannels[dependency]
 			}
 
-			// Execute service
+			// Execute service and add result or error to event
 			result, err := service.Handler(ctx, event)
-
 			mu.Lock()
-			event.Responses[service.Name] = result
-			if err != nil {
+			if err == nil {
+				event.Responses[service.Name] = result
+			} else {
 				event.Warnings = append(event.Warnings, err.Error())
 			}
 			mu.Unlock()
@@ -139,8 +133,14 @@ func (o *Orchestrator) Orchestrate(
 	wg.Wait()
 
 	// Journal the event
-	go o.journaler.Journal(ctx, event)
+	if o.journaler != nil {
+		go func() {
+			if err := o.journaler.Journal(ctx, event); err != nil {
+				o.log.Error("failed to journal event", "error", err)
+			}
+		}()
+	}
 
 	// Return the response
-	return &Response{Event: event}, nil
+	return event, nil
 }

@@ -2,6 +2,7 @@ package example
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand"
 	"os"
@@ -9,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/mdkelley02/orchestrator-pattern/internal/event"
-	"github.com/mdkelley02/orchestrator-pattern/internal/journaler"
 	"github.com/mdkelley02/orchestrator-pattern/internal/orchestrator"
 	"github.com/mdkelley02/orchestrator-pattern/internal/services"
 	"github.com/stretchr/testify/require"
@@ -17,9 +17,7 @@ import (
 
 func Request() *orchestrator.Request {
 	return &orchestrator.Request{
-		EventId:        strconv.Itoa(rand.Intn(1000000)),
-		TenantId:       strconv.Itoa(rand.Intn(1000000)),
-		OrganizationId: strconv.Itoa(rand.Intn(1000000)),
+		RequestId: strconv.Itoa(rand.Intn(1000000)),
 		Payload: map[string]map[string]any{
 			"device": {
 				"userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
@@ -39,8 +37,8 @@ func Request() *orchestrator.Request {
 	}
 }
 
-func TestLightGraphOrchestration(t *testing.T) {
-	var PaymentService = services.Config{
+func Test_SimpleDependencyGraph(t *testing.T) {
+	paymentService := services.Config{
 		Name:        "payments",
 		RetryConfig: services.DefaultRetryConfig,
 		Handler: func(ctx context.Context, request *event.Event) (any, error) {
@@ -48,17 +46,17 @@ func TestLightGraphOrchestration(t *testing.T) {
 		},
 	}
 
-	var AnalyticsService = services.Config{
+	analyticsService := services.Config{
 		Name:         "analytics",
-		Dependencies: []string{PaymentService.Name},
+		Dependencies: []string{paymentService.Name},
 		Handler: func(ctx context.Context, request *event.Event) (any, error) {
 			return "ANALYTICS", nil
 		},
 	}
 
-	var ReportingService = services.Config{
+	reportingService := services.Config{
 		Name:         "reporting",
-		Dependencies: []string{AnalyticsService.Name},
+		Dependencies: []string{analyticsService.Name},
 		Handler: func(ctx context.Context, request *event.Event) (any, error) {
 			return "REPORTING", nil
 		},
@@ -68,33 +66,33 @@ func TestLightGraphOrchestration(t *testing.T) {
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 			Level: slog.LevelDebug,
 		})),
-		journaler.New(),
-		PaymentService,
-		AnalyticsService,
-		ReportingService,
+		nil,
+		paymentService,
+		analyticsService,
+		reportingService,
 	)
 
 	ctx := context.Background()
 
 	for range 1000 {
-		response, err := o.Orchestrate(ctx, Request())
+		event, err := o.Orchestrate(ctx, Request())
 		require.NoError(t, err)
-		require.NotNil(t, response)
-		require.Equal(t, response.Event.Responses[PaymentService.Name], "PAYMENTS")
-		require.Equal(t, response.Event.Responses[AnalyticsService.Name], "ANALYTICS")
-		require.Equal(t, response.Event.Responses[ReportingService.Name], "REPORTING")
+		require.NotNil(t, event)
+		require.Equal(t, event.Responses[paymentService.Name], "PAYMENTS")
+		require.Equal(t, event.Responses[analyticsService.Name], "ANALYTICS")
+		require.Equal(t, event.Responses[reportingService.Name], "REPORTING")
 	}
 }
 
-func TestFlatOrchestration(t *testing.T) {
-	var PaymentService = services.Config{
+func Test_FlatDependencyGraph(t *testing.T) {
+	paymentService := services.Config{
 		Name: "payments",
 		Handler: func(ctx context.Context, request *event.Event) (any, error) {
 			return "PAYMENTS", nil
 		},
 	}
 
-	var AnalyticsService = services.Config{
+	analyticsService := services.Config{
 		Name: "analytics",
 		Handler: func(ctx context.Context, request *event.Event) (any, error) {
 			return "ANALYTICS", nil
@@ -105,18 +103,54 @@ func TestFlatOrchestration(t *testing.T) {
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 			Level: slog.LevelDebug,
 		})),
-		journaler.New(),
-		PaymentService,
-		AnalyticsService,
+		nil,
+		paymentService,
+		analyticsService,
 	)
 
 	ctx := context.Background()
 
 	for range 1000 {
-		response, err := o.Orchestrate(ctx, Request())
+		event, err := o.Orchestrate(ctx, Request())
 		require.NoError(t, err)
-		require.NotNil(t, response)
-		require.Equal(t, response.Event.Responses[PaymentService.Name], "PAYMENTS")
-		require.Equal(t, response.Event.Responses[AnalyticsService.Name], "ANALYTICS")
+		require.NotNil(t, event)
+		require.Equal(t, event.Responses[paymentService.Name], "PAYMENTS")
+		require.Equal(t, event.Responses[analyticsService.Name], "ANALYTICS")
+	}
+}
+
+func Test_DependentServiceThrowsError(t *testing.T) {
+	authorizationService := services.Config{
+		Name: "authorization",
+		Handler: func(ctx context.Context, request *event.Event) (any, error) {
+			return nil, errors.New("authorization failed")
+		},
+	}
+
+	paymentService := services.Config{
+		Name:         "payment",
+		Dependencies: []string{authorizationService.Name},
+		Handler: func(ctx context.Context, request *event.Event) (any, error) {
+			return "PAYMENT", nil
+		},
+	}
+
+	o := orchestrator.New(
+		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+		nil,
+		authorizationService,
+		paymentService,
+	)
+
+	ctx := context.Background()
+
+	for range 1000 {
+		event, err := o.Orchestrate(ctx, Request())
+		require.NoError(t, err)
+		require.NotNil(t, event)
+		require.Equal(t, []string{"authorization failed"}, event.Warnings)
+		require.Equal(t, map[string]any{paymentService.Name: "PAYMENT"}, event.Responses)
 	}
 }

@@ -52,7 +52,7 @@ func main() {
 
     analyticsService := services.Config{
         Name:         "analytics",
-        Dependencies: []string{"payments"},
+        Dependencies: []string{paymentService.Name},
         Handler: func(ctx context.Context, request *event.Event) (any, error) {
             // Implement analytics service logic
             return "ANALYTICS_COMPLETE", nil
